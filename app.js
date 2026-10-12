@@ -15,7 +15,7 @@ const CFG = {
   AUDIO_BITRATE: 16000,         // Opus 16 kbit/s : ~7 Mo pour 1 h
   MAX_INLINE_AUDIO_BYTES: 14 * 1024 * 1024,
   SILENCE_RMS: 0.002,           // en dessous : extrait ignoré (économie)
-  DEFAULT_MODEL: 'gemini-2.5-flash',
+  DEFAULT_MODEL: 'gemini-flash-latest', // alias Google toujours pointé sur le Flash le plus récent
   STORE_KEY: 'qacopilot.session',
 };
 
@@ -158,26 +158,43 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------- Gemini ----------
-async function gemini({ system, parts, temperature, schema, fast }) {
-  const model = settings.model;
-  const generationConfig = { temperature };
-  if (schema) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseSchema = schema; }
-  if (fast && /^gemini-2\.5-flash/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+async function callModel(model, body) {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
-      body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts }], generationConfig }),
-    },
+    { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key }, body: JSON.stringify(body) },
   );
   const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
+async function gemini({ system, parts, temperature, schema, fast }) {
+  let model = settings.model;
+  const generationConfig = { temperature };
+  if (schema) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseSchema = schema; }
+  // Réflexion réduite pour le live : syntaxe 2.5 (budget) ou 3.x+ (niveau)
+  if (fast) generationConfig.thinkingConfig = /2\.5/.test(model) ? { thinkingBudget: 0 } : { thinkingLevel: 'low' };
+  const body = { systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts }], generationConfig };
+
+  let { res, data } = await callModel(model, body);
+  // Modèle retiré / introuvable -> bascule automatique sur l'alias Flash le plus récent
+  if (res.status === 404 && model !== CFG.DEFAULT_MODEL) {
+    model = CFG.DEFAULT_MODEL;
+    localStorage.setItem('qacopilot.model', model);
+    if (fast) generationConfig.thinkingConfig = { thinkingLevel: 'low' };
+    ({ res, data } = await callModel(model, body));
+  }
+  // Paramètre de réflexion non supporté par ce modèle -> on réessaie sans
+  if (res.status === 400 && generationConfig.thinkingConfig) {
+    delete generationConfig.thinkingConfig;
+    ({ res, data } = await callModel(model, body));
+  }
   if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
   const cand = data.candidates?.[0];
   const text = (cand?.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || '').join('');
   if (!text) throw new Error('Réponse vide (' + (cand?.finishReason || data.promptFeedback?.blockReason || '?') + ')');
   return text;
 }
+
 
 const LIVE_SCHEMA = {
   type: 'OBJECT',
@@ -343,6 +360,9 @@ function refreshSetup() {
 {
   const m = location.hash.match(/key=([\w-]+)/);
   if (m) { localStorage.setItem('qacopilot.key', m[1]); history.replaceState(null, '', location.pathname); }
+  // Ancienne version : modèle retiré mémorisé sur le téléphone -> on le remplace
+  if (/gemini-(1\.5|2\.0|2\.5)-flash/.test(localStorage.getItem('qacopilot.model') || '')) localStorage.setItem('qacopilot.model', CFG.DEFAULT_MODEL);
+  $('model').placeholder = CFG.DEFAULT_MODEL;
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 refreshSetup();

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d12">
+  <title>QA Copilot</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <style>
+    :root { --bg:#0b0d12; --panel:#151923; --txt:#e8ebf2; --dim:#8a93a6; --red:#e5484d; --amber:#f5a524; --blue:#3e9bff; --green:#30a46c; }
+    * { box-sizing:border-box; }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--txt); font-family:system-ui,-apple-system,Roboto,sans-serif; }
+    body { display:flex; flex-direction:column; height:100dvh; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+    header { display:flex; align-items:center; gap:10px; padding:10px 14px; font-size:14px; color:var(--dim); }
+    header .dot { width:10px; height:10px; border-radius:50%; background:#444; flex:none; }
+    header .dot.on { background:var(--red); animation:pulse 1.4s infinite; }
+    header #status { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    header #status.err { color:var(--amber); }
+    header button { background:none; border:none; color:var(--dim); font-size:22px; padding:0 4px; }
+    @keyframes pulse { 50% { opacity:.3; } }
+    main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+    .screen { display:none; flex:1; flex-direction:column; padding:0 14px 14px; gap:12px; overflow:auto; }
+    .screen.active { display:flex; }
+    label { font-size:13px; color:var(--dim); }
+    input, textarea, select { width:100%; background:var(--panel); color:var(--txt); border:1px solid #2a3040; border-radius:10px; padding:12px; font-size:16px; font-family:inherit; }
+    textarea { resize:vertical; min-height:140px; }
+    .btn { border:none; border-radius:14px; padding:18px; font-size:18px; font-weight:700; color:#fff; width:100%; }
+    .btn.go { background:var(--green); }
+    .btn.stop { background:var(--red); }
+    .btn.sec { background:var(--panel); color:var(--txt); font-weight:600; font-size:16px; padding:14px; }
+    .row { display:flex; gap:10px; }
+    .hint { font-size:13px; color:var(--dim); line-height:1.4; }
+    .hint a { color:var(--blue); }
+    /* Live */
+    #cue { flex:1.3; display:flex; flex-direction:column; justify-content:center; background:#000; border-radius:16px; padding:20px; transition:opacity .6s; min-height:180px; }
+    #cue .type { font-size:15px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; margin-bottom:10px; }
+    #cue .text { font-size:30px; font-weight:700; line-height:1.25; }
+    #cue.Alerte .type { color:var(--red); }
+    #cue.Question .type { color:var(--blue); }
+    #cue.idle { opacity:.35; }
+    #history { display:flex; flex-direction:column; gap:8px; }
+    #history .item { background:var(--panel); border-radius:10px; padding:10px 12px; font-size:17px; line-height:1.3; }
+    #history .item b { font-size:12px; text-transform:uppercase; margin-right:6px; }
+    #history .item.Alerte b { color:var(--red); }
+    #history .item.Question b { color:var(--blue); }
+    #heard { font-size:12px; color:var(--dim); min-height:32px; max-height:48px; overflow:hidden; }
+    /* Result */
+    #result { white-space:pre-wrap; background:var(--panel); border-radius:12px; padding:14px; font-size:14px; line-height:1.45; flex:1; overflow:auto; user-select:text; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot"></span>
+    <span id="status">Prêt</span>
+    <span id="clock"></span>
+    <button id="gear" title="Réglages">⚙</button>
+  </header>
+
+  <main>
+    <!-- Réglages (clé API) -->
+    <section class="screen" id="s-settings">
+      <h2>Réglages</h2>
+      <label for="apiKey">Clé API Gemini (stockée uniquement sur ce téléphone)</label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="AIza...">
+      <label for="model">Modèle</label>
+      <input id="model" type="text" placeholder="gemini-2.5-flash">
+      <p class="hint">Clé à créer sur <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> avec la facturation activée (vos données ne servent alors pas à l'entraînement).</p>
+      <button class="btn go" id="saveSettings">Enregistrer</button>
+    </section>
+
+    <!-- Préparation -->
+    <section class="screen" id="s-setup">
+      <label for="usContext">User Story / contexte de la réunion (facultatif, collez le texte)</label>
+      <textarea id="usContext" placeholder="En tant que… je veux… afin de…&#10;Critères d'acceptation…"></textarea>
+      <p class="hint">Posez le téléphone près des haut-parleurs. L'écran restera allumé : ne verrouillez pas le téléphone et laissez l'onglet au premier plan.</p>
+      <button class="btn go" id="start">🎙 Démarrer la session</button>
+      <button class="btn sec" id="lastSession" style="display:none">Voir la dernière synthèse</button>
+    </section>
+
+    <!-- Live -->
+    <section class="screen" id="s-live">
+      <div id="cue" class="idle"><div class="type">En écoute</div><div class="text">RAS</div></div>
+      <div id="history"></div>
+      <div id="heard"></div>
+      <button class="btn stop" id="stop">■ Terminer &amp; Synthétiser</button>
+    </section>
+
+    <!-- Résultat -->
+    <section class="screen" id="s-result">
+      <div id="result"></div>
+      <div class="row">
+        <button class="btn sec" id="copy">Copier</button>
+        <button class="btn sec" id="share">Partager</button>
+      </div>
+      <div class="row">
+        <button class="btn sec" id="retry" style="display:none">Réessayer</button>
+        <button class="btn sec" id="newSession">Nouvelle session</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="prompts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
